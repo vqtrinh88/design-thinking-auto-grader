@@ -22,6 +22,16 @@ export function estimateWordCount(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+export function normalizeHeader(input: string) {
+  return input
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
 export function sanitizeWorksheetName(name: string) {
   return name.replace(/[\\/?*\[\]:]/g, '_').slice(0, 31);
 }

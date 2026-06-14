@@ -15,18 +15,26 @@ export type MatchResult = {
 
 function extractStudentSignals(text: string, fileName: string) {
   const combined = `${fileName} ${text}`;
-  const mssvMatches = combined.match(/\b\d{6,12}\b/g) || [];
+  // Extract runs of 6-12 digits even when glued to letters/underscores
+  // (e.g. "2012345_baitap.pdf" or "MSSV2012345.docx"). A plain \b boundary
+  // fails here because "_" counts as a word character.
+  const mssvMatches = combined.match(/(?<!\d)\d{6,12}(?!\d)/g) || [];
+  const normalized = normalizeText(combined);
   return {
     possibleMssv: [...new Set(mssvMatches)],
-    normalized: normalizeText(combined)
+    normalized,
+    // Compact form (no spaces) catches glued/CamelCase filenames like
+    // "BaiLuan_TranThiBinh.docx" => "...tranthibinh...".
+    compact: normalized.replace(/\s+/g, ''),
+    tokens: new Set(normalized.split(' ').filter(Boolean))
   };
 }
 
 export function matchStudentFromEssay(students: StudentRow[], essayText: string, fileName: string): MatchResult {
-  const { possibleMssv, normalized } = extractStudentSignals(essayText, fileName);
+  const { possibleMssv, normalized, compact, tokens } = extractStudentSignals(essayText, fileName);
 
   for (const mssv of possibleMssv) {
-    const exact = students.find((student) => student.mssv === mssv);
+    const exact = students.find((student) => student.mssv && student.mssv === mssv);
     if (exact) {
       return {
         student: exact,
@@ -44,11 +52,18 @@ export function matchStudentFromEssay(students: StudentRow[], essayText: string,
     if (!name) continue;
 
     let score = 0;
-    if (normalized.includes(name)) score += 0.9;
+    const nameCompact = name.replace(/\s+/g, '');
+    if (name.length >= 4 && (normalized.includes(name) || (nameCompact.length >= 6 && compact.includes(nameCompact)))) {
+      score += 0.9;
+    }
 
-    const parts = name.split(' ').filter(Boolean);
-    const matchedParts = parts.filter((part) => normalized.includes(part)).length;
-    if (parts.length) score += (matchedParts / parts.length) * 0.4;
+    // Only count name parts with at least 2 chars and require whole-token
+    // matches to avoid false positives like single letter "a" hitting "baitap".
+    const parts = name.split(' ').filter((part) => part.length >= 2);
+    if (parts.length) {
+      const matchedParts = parts.filter((part) => tokens.has(part)).length;
+      score += (matchedParts / parts.length) * 0.4;
+    }
 
     if (score > bestScore) {
       bestScore = score;
@@ -56,7 +71,9 @@ export function matchStudentFromEssay(students: StudentRow[], essayText: string,
     }
   }
 
-  if (!best) {
+  // Require a meaningful signal before claiming a match; otherwise route to
+  // manual review instead of guessing.
+  if (!best || bestScore < 0.4) {
     return {
       student: null,
       confidence: 0,

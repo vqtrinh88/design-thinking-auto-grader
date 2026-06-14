@@ -47,7 +47,20 @@ export async function POST(request: Request) {
     }
 
     const rosterBuffer = Buffer.from(await roster.arrayBuffer());
-    const { workbook, firstSheetName, rows, students } = readRosterWorkbook(rosterBuffer);
+    const { workbook, firstSheetName, rows, students, columns } = readRosterWorkbook(rosterBuffer);
+
+    const recognizedStudents = students.filter((s) => s.mssv || s.fullName).length;
+    if (recognizedStudents === 0) {
+      return NextResponse.json(
+        {
+          error:
+            'Không nhận diện được cột MSSV hoặc Họ tên trong file danh sách lớp. ' +
+            'Hãy đảm bảo file roster có cột mã số sinh viên (vd: MSSV, Mã số sinh viên) và/hoặc cột họ tên (vd: Họ tên, Họ và tên).'
+        },
+        { status: 400 }
+      );
+    }
+
     const resultsByMssv = new Map<string, any>();
     const manualReviewRows: Array<Record<string, unknown>> = [];
     const previewRows: PreviewRow[] = [];
@@ -142,11 +155,22 @@ export async function POST(request: Request) {
       sheetName: firstSheetName,
       rows,
       resultsByMssv,
-      manualReviewRows
+      manualReviewRows,
+      columns
     });
 
     const output = workbookToBuffer(updatedWorkbook);
-    const summary = JSON.stringify({ processed, matched, review, aiFlagged, under1500, duplicates });
+    const summary = JSON.stringify({
+      processed,
+      matched,
+      review,
+      aiFlagged,
+      under1500,
+      duplicates,
+      rosterStudents: recognizedStudents,
+      mssvColumn: columns.mssvKey,
+      nameColumn: columns.nameKey || [columns.lastNameKey, columns.firstNameKey].filter(Boolean).join(' + ') || null
+    });
     const preview = JSON.stringify(previewRows.slice(0, 30));
     const filename = 'bang-tong-hop-diem-da-cham.xlsx';
 
@@ -161,7 +185,17 @@ export async function POST(request: Request) {
       }
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Lỗi hệ thống khi chấm bài.';
+    const cause = (error as { cause?: unknown })?.cause;
+    const causeCode = (cause as { code?: string })?.code;
+    let message = error instanceof Error ? error.message : 'Lỗi hệ thống khi chấm bài.';
+
+    if (causeCode === 'SELF_SIGNED_CERT_IN_CHAIN' || causeCode === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+      message =
+        'Không thể kết nối tới OpenAI do chứng chỉ TLS của proxy/mạng nội bộ. ' +
+        'Hãy chạy server với NODE_OPTIONS=--use-system-ca (hoặc đặt NODE_EXTRA_CA_CERTS trỏ tới root CA của tổ chức).';
+    }
+
+    console.error('[grade] error:', error, 'cause:', cause);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
